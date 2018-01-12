@@ -5,9 +5,9 @@ import numpy as np
 
 
 class SnliModel(object):
-    def __init__(self, pc, w2i, l2i, emb_dim=30,
-                 f_in_dim=30, f_act=dy.rectify,
-                 g_out_dim=30):
+    def __init__(self, pc, w2i, l2i, emb_dim=5,
+                 f_in_dim=5, f_act=dy.rectify,
+                 g_out_dim=5):
         self.model = pc
         self.w2i = w2i
         self.l2i = l2i
@@ -34,27 +34,29 @@ class SnliModel(object):
 
     @staticmethod
     def e_i_j(w1, w2):
-        return w1 * w2
+        return (dy.transpose(w1) * w2).npvalue()[0]
 
     @staticmethod
-    def beta_i(ea_i):
-        """ ea_i is a dict that map a vector to a matrix (?)
-            :return vector with size of embed dim
+    def beta_i(ea_i, b_vecs):
         """
-        beta_i_vecs = [dy.softmax(ea_i[b_j]) * b_j for b_j in ea_i]
-        return dy.esum(beta_i_vecs)
+        :param ea_i: vector as list
+        :param b_vecs: list of vectors.
+        """
+        soft_ea_i = dy.softmax(dy.inputTensor(ea_i))
+        return dy.esum([soft_eij * b_j for soft_eij, b_j in zip(soft_ea_i.npvalue(), b_vecs)])
 
     @staticmethod
-    def alpha_j(eb_j):
-        """ eb_j is a dict that map a vector to a matrix (?)
-            :return vector with size of embed dim
+    def alpha_j(eb_j, a_vecs):
         """
-        alpha_j_vecs = [dy.softmax(eb_j[a_i]) * a_i for a_i in eb_j]
-        return dy.esum(alpha_j_vecs)
+        :param eb_j: vector as list
+        :param a_vecs: list of vectors.
+        """
+        soft_eb_j = dy.softmax(dy.inputTensor(eb_j))
+        return dy.esum([soft_eij * a_i for soft_eij, a_i in zip(soft_eb_j.npvalue(), a_vecs)])
 
     def feed_forward_g(self, u, v):
         p_W, p_b = dy.parameter(self.g_W), dy.parameter(self.g_b)
-        return p_W * dy.concatenate(u, v) + p_b
+        return p_W * dy.concatenate([u, v]) + p_b
 
     @staticmethod
     def get_v(list_of_vis):
@@ -63,7 +65,7 @@ class SnliModel(object):
 
     def feed_forward_h(self, v1, v2):
         p_W, p_b = dy.parameter(self.h_W), dy.parameter(self.h_b)
-        return p_W * dy.concatenate(v1, v2) + p_b
+        return p_W * dy.concatenate([v1, v2]) + p_b
 
     @staticmethod
     def find_index_label(net_output):
@@ -81,20 +83,17 @@ class SnliModel(object):
 
         # e
         ea, eb = dict(), dict()
-        for a_vec in a_after_f:
-            ea_a_vec = dict()
-            for b_vec in b_after_f:
-                if b_vec not in eb:
-                    eb[b_vec] = dict()
-
-                eij = self.e_i_j(a_vec, b_vec)
-                ea_a_vec[b_vec] = eij
-                eb[b_vec][a_vec] = eij
-            ea[a_vec] = ea_a_vec
+        for a_f_i in a_after_f:
+            ea[a_f_i] = [self.e_i_j(a_f_i, b_f_j) for b_f_j in b_after_f]
+            print ea[a_f_i]
+        print
+        for j, b_f_j in enumerate(b_after_f):
+            eb[b_f_j] = [ea[a_f_i][j] for a_f_i in ea]
+            print eb[b_f_j]
 
         # alpha and beta
-        beta_list = [self.beta_i(ea_i) for ea_i in ea]
-        alpha_list = [self.alpha_j(eb_j) for eb_j in eb]
+        beta_list = [self.beta_i(ea[ea_i], b_vecs) for ea_i in ea]
+        alpha_list = [self.alpha_j(eb[eb_j], a_vecs) for eb_j in eb]
 
         # G
         v1_vecs = [self.feed_forward_g(a_i, beta_i) for a_i, beta_i in zip(a_vecs, beta_list)]
@@ -119,7 +118,10 @@ if __name__ == '__main__':
     l_to_i = {my_label: index for index, my_label in enumerate(my_labels)}
 
     my_snli_model = SnliModel(dy.ParameterCollection(), w_to_i, l_to_i)
-    prob = my_snli_model('hello see me'.split())
-    print my_snli_model.find_index_label(prob), prob
+    a1 = 'hello see me'.split()
+    b1 = 'look right here'.split()
+    dy.renew_cg()
+    prob = my_snli_model(a1, b1)
+    print my_snli_model.find_index_label(prob), prob.npvalue()
 
     print 'time to run all:', time() - t0
