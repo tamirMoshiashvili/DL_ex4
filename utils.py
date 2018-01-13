@@ -16,10 +16,13 @@ def word_set_from_sentences(sentences):
     word_set = set()
 
     for sent in sentences:
-        words = sent.split()
-        word_set.update(words)
+        try:
+            words = sent.split()
+            word_set.update(words)
+        except:
+            pass
 
-    return list(word_set)
+    return word_set
 
 
 if __name__ == '__main__':

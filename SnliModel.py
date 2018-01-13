@@ -8,8 +8,8 @@ UNK = '_UNK_'
 
 
 class SnliModel(object):
-    def __init__(self, pc, w2i, l2i, emb_dim=50,
-                 f_in_dim=25, f_act=dy.rectify, g_out_dim=15):
+    def __init__(self, pc, w2i, l2i, emb_dim=100,
+                 f_in_dim=75, f_act=dy.rectify, g_out_dim=50):
         self.model = pc
         self.w2i = w2i
         self.w2i[UNK] = len(w2i)
@@ -131,53 +131,68 @@ class SnliModel(object):
         report_train_file = open('acc_train', 'w')
         report_train_file.write('train\n')
 
-        trainer = dy.AdagradTrainer(self.model)
+        trainer = dy.AdamTrainer(self.model)
+
+        check_after = 60000
 
         for epoch in range(1):
             train_size = 0
             total_loss = good = bad = 0.0
-            t = time()
+            t_epoch = t = time()
 
-            for s1, s2, gold_label in train:
-                if gold_label == '-':  # ignore input that has no gold-label
-                    continue
+            for s1, s2, gold_label in zip(train[0], train[1], train[2]):
+                if gold_label == '-' or type(s1) != str or type(s2) != str:
+                    continue  # ignore input that has no gold-label
 
                 dy.renew_cg()
                 train_size += 1
 
                 output = self(s1, s2)
-                pred_label = self.find_index_label(output)
-                loss = -dy.log(dy.pick(pred_label, self.l2i[gold_label]))
+                loss = -dy.log(dy.pick(output, self.l2i[gold_label]))
                 total_loss += loss.value()
                 loss.backward()
                 trainer.update()
 
-                if gold_label == self.i2l[pred_label]:
+                pred_label_index = self.find_index_label(output)
+                if gold_label == self.i2l[pred_label_index]:
                     good += 1
                 else:
                     bad += 1
 
-                if train_size % 500 == 499:
-                    curr_dev_acc, test_acc = self.check_test(dev, 'dev'), self.check_test(test, 'test')
+                if train_size % check_after == check_after - 1:
+                    print 'time for', check_after, 'sentences:', time() - t
+                    t = time()
+
+                    curr_dev_acc, test_acc = self.check_test(dev), self.check_test(test)
                     report_dev_file.write(str(curr_dev_acc) + ',' + str(test_acc) + '\n')
                     if to_save and curr_dev_acc > best_dev_acc:
                         best_dev_acc = curr_dev_acc
                         self.save_model(model_name)
+                    print 'time for dev and test:', time() - t, 'dev-acc:', curr_dev_acc, 'test-acc:', test_acc
+                    t = time()
 
             train_acc = good / (good + bad)
-            print epoch, 'loss:', total_loss / train_size, 'acc:', train_acc, 'time:', time() - t
+            print epoch, 'loss:', total_loss / train_size, 'acc:', train_acc, 'time:', time() - t_epoch
             report_train_file.write(str(train_acc) + '\n')
+
+            t = time()
+            curr_dev_acc, test_acc = self.check_test(dev), self.check_test(test)
+            report_dev_file.write(str(curr_dev_acc) + ',' + str(test_acc) + '\n')
+            if to_save and curr_dev_acc > best_dev_acc:
+                best_dev_acc = curr_dev_acc
+                self.save_model(model_name)
+            print 'time for dev and test:', time() - t, 'dev-acc:', curr_dev_acc, 'test-acc:', test_acc
 
         report_dev_file.close()
         report_train_file.close()
 
-    def check_test(self, test, name):
+    def check_test(self, test):
         """ test is a tuple (s1 sentences, s2 sentences, gold labels) """
         good = bad = 0.0
         t = time()
         test_size = 0
 
-        for s1, s2, gold_label in test:
+        for s1, s2, gold_label in zip(test[0], test[1], test[2]):
             if gold_label == '-':
                 continue
 
@@ -186,13 +201,12 @@ class SnliModel(object):
 
             output = self(s1, s2)
             pred_label = self.i2l[self.find_index_label(output)]
-            if gold_label == self.i2l[pred_label]:
+            if gold_label == pred_label:
                 good += 1
             else:
                 bad += 1
 
         acc = good / (good + bad)
-        print 'acc on ' + name + ':', acc, 'time:', time() - t
         return acc
 
     def save_model(self, filename):
