@@ -8,8 +8,8 @@ def read_from(file_path):
     """ read the sentences out of the file
         sentence can be accessed by sentences[i]
     """
-    df = pd.read_csv(file_path, delimiter='\t', usecols=['sentence1', 'sentence2'])
-    return df.sentence1, df.sentence2
+    df = pd.read_csv(file_path, delimiter='\t', usecols=['gold_label', 'sentence1', 'sentence2'])
+    return df.sentence1, df.sentence2, df.gold_label
 
 
 def word_set_from_sentences(sentences):
@@ -27,9 +27,10 @@ if __name__ == '__main__':
     print 'start'
 
     filepath = sys.argv[1]
-    s1, s2 = read_from(filepath)
+    s1, s2, labels = read_from(filepath)
     ws = word_set_from_sentences(s1)
     print len(ws)
+    print s1[:5]
     for wi in ws[:10]:
         print wi
 

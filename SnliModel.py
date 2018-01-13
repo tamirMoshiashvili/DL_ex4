@@ -2,16 +2,21 @@ from time import time
 
 import dynet as dy
 import numpy as np
+import pickle
+
+UNK = '_UNK_'
 
 
 class SnliModel(object):
-    def __init__(self, pc, w2i, l2i, emb_dim=5,
-                 f_in_dim=5, f_act=dy.rectify,
-                 g_out_dim=5):
+    def __init__(self, pc, w2i, l2i, emb_dim=50,
+                 f_in_dim=25, f_act=dy.rectify, g_out_dim=15):
         self.model = pc
         self.w2i = w2i
+        self.w2i[UNK] = len(w2i)
         self.l2i = l2i
         self.i2l = {i: l for l, i in l2i.iteritems()}
+
+        self.spec = (emb_dim, f_in_dim, f_act, g_out_dim)
 
         self.embed = pc.add_lookup_parameters((len(w2i), emb_dim))
 
@@ -71,11 +76,20 @@ class SnliModel(object):
     def find_index_label(net_output):
         return np.argmax(net_output.npvalue())
 
+    def apply_embed(self, s):
+        """ s is a list of words """
+        return [dy.lookup(self.embed, self.w2i[w]) if w in self.w2i
+                else dy.lookup(self.embed, self.w2i[UNK])
+                for w in s]
+
     def __call__(self, a, b):
-        """ a and b are list of words (each word is a string) """
+        """ a and b are sentences """
+        a = a.split()
+        b = b.split()
+
         # embed
-        a_vecs = [dy.lookup(self.embed, self.w2i[w]) for w in a]
-        b_vecs = [dy.lookup(self.embed, self.w2i[w]) for w in b]
+        a_vecs = self.apply_embed(a)
+        b_vecs = self.apply_embed(b)
 
         # F
         a_after_f = [self.feed_forward_f(w_vec) for w_vec in a_vecs]
@@ -85,11 +99,8 @@ class SnliModel(object):
         ea, eb = dict(), dict()
         for a_f_i in a_after_f:
             ea[a_f_i] = [self.e_i_j(a_f_i, b_f_j) for b_f_j in b_after_f]
-            print ea[a_f_i]
-        print
         for j, b_f_j in enumerate(b_after_f):
             eb[b_f_j] = [ea[a_f_i][j] for a_f_i in ea]
-            print eb[b_f_j]
 
         # alpha and beta
         beta_list = [self.beta_i(ea[ea_i], b_vecs) for ea_i in ea]
@@ -106,6 +117,103 @@ class SnliModel(object):
         # H
         probs = self.feed_forward_h(v1, v2)
         return probs
+
+    def train_on(self, train, dev, test, to_save=False, model_name=None):
+        """ train, dev and test are tuples (s1 sentences, s2 sentences, gold labels)
+            if to_save is True, then user must specify model_name
+        """
+        if to_save and model_name is None:
+            raise Exception('to save, you must specify model_name')
+
+        report_dev_file = open('acc_dev_and_test', 'w')
+        report_dev_file.write('dev,test\n')
+        best_dev_acc = 0.0
+        report_train_file = open('acc_train', 'w')
+        report_train_file.write('train\n')
+
+        trainer = dy.AdagradTrainer(self.model)
+
+        for epoch in range(1):
+            train_size = 0
+            total_loss = good = bad = 0.0
+            t = time()
+
+            for s1, s2, gold_label in train:
+                if gold_label == '-':  # ignore input that has no gold-label
+                    continue
+
+                dy.renew_cg()
+                train_size += 1
+
+                output = self(s1, s2)
+                pred_label = self.find_index_label(output)
+                loss = -dy.log(dy.pick(pred_label, self.l2i[gold_label]))
+                total_loss += loss.value()
+                loss.backward()
+                trainer.update()
+
+                if gold_label == self.i2l[pred_label]:
+                    good += 1
+                else:
+                    bad += 1
+
+                if train_size % 500 == 499:
+                    curr_dev_acc, test_acc = self.check_test(dev, 'dev'), self.check_test(test, 'test')
+                    report_dev_file.write(str(curr_dev_acc) + ',' + str(test_acc) + '\n')
+                    if to_save and curr_dev_acc > best_dev_acc:
+                        best_dev_acc = curr_dev_acc
+                        self.save_model(model_name)
+
+            train_acc = good / (good + bad)
+            print epoch, 'loss:', total_loss / train_size, 'acc:', train_acc, 'time:', time() - t
+            report_train_file.write(str(train_acc) + '\n')
+
+        report_dev_file.close()
+        report_train_file.close()
+
+    def check_test(self, test, name):
+        """ test is a tuple (s1 sentences, s2 sentences, gold labels) """
+        good = bad = 0.0
+        t = time()
+        test_size = 0
+
+        for s1, s2, gold_label in test:
+            if gold_label == '-':
+                continue
+
+            dy.renew_cg()
+            test_size += 1
+
+            output = self(s1, s2)
+            pred_label = self.i2l[self.find_index_label(output)]
+            if gold_label == self.i2l[pred_label]:
+                good += 1
+            else:
+                bad += 1
+
+        acc = good / (good + bad)
+        print 'acc on ' + name + ':', acc, 'time:', time() - t
+        return acc
+
+    def save_model(self, filename):
+        self.model.save(filename)
+        emb_dim, f_in_dim, f_act, g_out_dim = self.spec
+        obj = {'w2i': self.w2i, 'l2i': self.l2i,
+               'emb_dim': emb_dim, 'f_in_dim': f_in_dim, 'f_act': f_act, 'g_out_dim': g_out_dim}
+        pickle.dump(obj, open(filename + '.params', 'wb'))
+
+    @staticmethod
+    def load_model(filename):
+        reader = pickle.load(open(filename + '.params', 'rb'))
+        w2i, l2i = reader['w2i'], reader['l2i']
+        emb_dim, f_in_dim, f_act, g_out_dim = reader['emb_dim'], reader['f_in_dim'], reader['f_act'], reader[
+            'g_out_dim']
+        m = dy.ParameterCollection()
+
+        net = SnliModel(m, w2i, l2i, emb_dim, f_in_dim, f_act, g_out_dim)
+        m.populate(filename)
+
+        return net
 
 
 if __name__ == '__main__':
