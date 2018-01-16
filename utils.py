@@ -4,6 +4,17 @@ import pandas as pd
 import sys
 
 
+def read_vocab_file(filename):
+    """
+    :param filename: name of vocabulary file.
+    :return: list of strings, where each is a word.
+    """
+    f = open(filename, 'r')
+    lines = f.read().splitlines()
+    f.close()
+    return lines
+
+
 def read_from(file_path):
     """ read the sentences out of the file
         sentence can be accessed by sentences[i]

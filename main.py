@@ -5,6 +5,7 @@ import sys
 import SnliModel
 import utils
 import dynet as dy
+import numpy as np
 
 if __name__ == '__main__':
     """ args:
@@ -23,16 +24,16 @@ if __name__ == '__main__':
     print 'time to read files:', time() - t
     t = time()
 
-    word_set1 = utils.word_set_from_sentences(train[0])
-    word_set2 = utils.word_set_from_sentences(train[1])
-    word_set1.update(word_set2)
-    w2i = {w: i for i, w in enumerate(word_set1)}
+    word_set = utils.read_vocab_file('vocab.txt')
+    w2i = {w: i for i, w in enumerate(word_set)}
 
     labels = ['neutral', 'entailment', 'contradiction']
     l2i = {l: i for i, l in enumerate(labels)}
 
+    vecs = np.loadtxt('wordVectors.txt')
+
     pc = dy.ParameterCollection()
-    model = SnliModel.SnliModel(pc, w2i, l2i)
+    model = SnliModel.SnliModel(pc, w2i, l2i, pre_embed=vecs)
     model.train_on(train, dev, test, to_save=True, model_name='model')
 
     print 'time to run model:', time() - t

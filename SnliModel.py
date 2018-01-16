@@ -4,21 +4,25 @@ import dynet as dy
 import numpy as np
 import pickle
 
-UNK = '_UNK_'
+UNK = 'UUUNKKK'
 
 
 class SnliModel(object):
-    def __init__(self, pc, w2i, l2i, emb_dim=100,
+    def __init__(self, pc, w2i, l2i, pre_embed=None, emb_dim=100,
                  f_in_dim=75, f_act=dy.rectify, g_out_dim=50):
         self.model = pc
         self.w2i = w2i
-        self.w2i[UNK] = len(w2i)
         self.l2i = l2i
         self.i2l = {i: l for l, i in l2i.iteritems()}
 
         self.spec = (emb_dim, f_in_dim, f_act, g_out_dim)
 
-        self.embed = pc.add_lookup_parameters((len(w2i), emb_dim))
+        if pre_embed is None:
+            self.embed = pc.add_lookup_parameters((len(w2i), emb_dim))
+        else:
+            emb_dim = len(pre_embed[0])
+            self.embed = pc.add_lookup_parameters(len(w2i), emb_dim)
+            self.embed.init_from_array(pre_embed)
 
         # F
         self.f_W_in, self.f_b_in = pc.add_parameters((f_in_dim, emb_dim)), pc.add_parameters(f_in_dim)
