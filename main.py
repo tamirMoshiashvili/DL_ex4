@@ -36,4 +36,5 @@ if __name__ == '__main__':
     model = SnliModel.SnliModel(pc, w2i, l2i, pre_embed=vecs)
     model.train_on(train, dev, test, to_save=True, model_name='model')
 
+
     print 'time to run model:', time() - t
