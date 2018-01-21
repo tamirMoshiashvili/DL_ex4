@@ -1,11 +1,10 @@
+import sys
 from time import time
 
-import sys
+import dynet as dy
 
 import SnliModel
 import utils
-import dynet as dy
-import numpy as np
 
 if __name__ == '__main__':
     """ args:
@@ -14,27 +13,29 @@ if __name__ == '__main__':
     """
 
     t = time()
-    print 'start'
+    print 'start reading glove-file'
 
-    args = sys.argv[1:]
-    train = utils.read_from(args[0])
-    dev = utils.read_from(args[1])
-    test = utils.read_from(args[2])
+    glove_file = 'glove.840B.300d.txt'
+    w2v = utils.read_glove_file(glove_file)
 
-    print 'time to read files:', time() - t
+    print 'time to read Glove-file:', time() - t
     t = time()
 
-    word_set = utils.read_vocab_file('vocab.txt')
-    w2i = {w: i for i, w in enumerate(word_set)}
+    print '\nstart read snli-data'
+    args = sys.argv[1:]
+    train = utils.read_snli_data(args[0], w2v)
+    dev = utils.read_snli_data(args[1], w2v)
+    # test = utils.read_snli_data(args[2], w2i, vecs)
 
     labels = ['neutral', 'entailment', 'contradiction']
     l2i = {l: i for i, l in enumerate(labels)}
 
-    vecs = np.loadtxt('wordVectors.txt')
+    print 'time to read input-files:', time() - t
+    t = time()
 
-    pc = dy.ParameterCollection()
-    model = SnliModel.SnliModel(pc, w2i, l2i, pre_embed=vecs)
-    model.train_on(train, dev, test, to_save=True, model_name='model')
-
+    print '\nstart training'
+    pc = dy.Model()
+    model = SnliModel.SnliModel(pc, l2i)
+    model.train_on(train, dev, model_name='model')
 
     print 'time to run model:', time() - t

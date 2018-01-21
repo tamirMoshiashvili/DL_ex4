@@ -2,154 +2,136 @@ from time import time
 
 import dynet as dy
 import numpy as np
-import pickle
 
-UNK = 'UUUNKKK'
+UNK = 'UNK'
 
 
 class SnliModel(object):
-    def __init__(self, pc, w2i, l2i, pre_embed=None, emb_dim=100,
-                 f_in_dim=75, f_act=dy.rectify, g_out_dim=50):
+    def __init__(self, pc, l2i, emb_dim=300, hid_dim=200, act_func=dy.rectify):
         self.model = pc
-        self.w2i = w2i
         self.l2i = l2i
         self.i2l = {i: l for l, i in l2i.iteritems()}
 
-        self.spec = (emb_dim, f_in_dim, f_act, g_out_dim)
-
-        if pre_embed is None:
-            self.embed = pc.add_lookup_parameters((len(w2i), emb_dim))
-        else:
-            emb_dim = len(pre_embed[0])
-            self.embed = pc.add_lookup_parameters(len(w2i), emb_dim)
-            self.embed.init_from_array(pre_embed)
+        # embed to linear
+        self.linear_embed_W, self.linear_embed_b = pc.add_parameters((hid_dim, emb_dim)), pc.add_parameters(hid_dim)
 
         # F
-        self.f_W_in, self.f_b_in = pc.add_parameters((f_in_dim, emb_dim)), pc.add_parameters(f_in_dim)
-        self.f_act = f_act
-        self.f_W_out, self.f_b_out = pc.add_parameters((emb_dim, f_in_dim)), pc.add_parameters(emb_dim)
+        self.f_W_in, self.f_b_in = pc.add_parameters((hid_dim, hid_dim)), pc.add_parameters(hid_dim)
+        self.f_act = act_func
+        self.f_W_out, self.f_b_out = pc.add_parameters((hid_dim, hid_dim)), pc.add_parameters(hid_dim)
 
         # G
-        self.g_W, self.g_b = pc.add_parameters((g_out_dim, 2 * emb_dim)), pc.add_parameters(g_out_dim)
+        self.g_W_in, self.g_b_in = pc.add_parameters((hid_dim, 2 * hid_dim)), pc.add_parameters(hid_dim)
+        self.g_act = act_func
+        self.g_W_out, self.g_b_out = pc.add_parameters((hid_dim, hid_dim)), pc.add_parameters(hid_dim)
 
         # H
+        self.h_W_in, self.h_b_in = pc.add_parameters((hid_dim, 2 * hid_dim)), pc.add_parameters(hid_dim)
+        self.h_act = act_func
+        self.h_W_out, self.h_b_out = pc.add_parameters((hid_dim, hid_dim)), pc.add_parameters(hid_dim)
+
+        # to out-dim
         out_dim = len(l2i)
-        self.h_W, self.h_b = pc.add_parameters((out_dim, 2 * g_out_dim)), pc.add_parameters(out_dim)
+        self.linear_final_W, self.linear_final_b = pc.add_parameters((out_dim, hid_dim)), pc.add_parameters(out_dim)
 
-    def feed_forward_f(self, word):
-        p_W_in, b_in = dy.parameter(self.f_W_in), dy.parameter(self.f_b_in)
-        p_W_out, b_out = dy.parameter(self.f_W_out), dy.parameter(self.f_b_out)
-        return p_W_out * self.f_act(p_W_in * word + b_in) + b_out
-
-    @staticmethod
-    def e_i_j(w1, w2):
-        return (dy.transpose(w1) * w2).npvalue()[0]
-
-    @staticmethod
-    def beta_i(ea_i, b_vecs):
+    def apply_embed_linear(self, a, b):
         """
-        :param ea_i: vector as list
-        :param b_vecs: list of vectors.
+        :param a: matrix, each row is the vector representing the ith word in the sentence.
+        :param b: matrix, each row is the vector representing the ith word in the sentence.
+        :return: a, b after linear-layer, hid-dim
         """
-        soft_ea_i = dy.softmax(dy.inputTensor(ea_i))
-        return dy.esum([soft_eij * b_j for soft_eij, b_j in zip(soft_ea_i.npvalue(), b_vecs)])
+        p_W_embed, p_b_embed = dy.parameter(self.linear_embed_W), dy.parameter(self.linear_embed_b)
+        a = p_W_embed * dy.inputTensor(a) + p_b_embed
+        b = p_W_embed * dy.inputTensor(b) + p_b_embed
+        return a, b
 
-    @staticmethod
-    def alpha_j(eb_j, a_vecs):
-        """
-        :param eb_j: vector as list
-        :param a_vecs: list of vectors.
-        """
-        soft_eb_j = dy.softmax(dy.inputTensor(eb_j))
-        return dy.esum([soft_eij * a_i for soft_eij, a_i in zip(soft_eb_j.npvalue(), a_vecs)])
+    def apply_f(self, a, b, drop=0.2):
+        """ MLP on each a, b """
+        p_W_f_in, p_b_f_in = dy.parameter(self.f_W_in), dy.parameter(self.f_b_in)
+        a_f_in = self.f_act(p_W_f_in * dy.dropout(a, drop) + p_b_f_in)
+        b_f_in = self.f_act(p_W_f_in * dy.dropout(b, drop) + p_b_f_in)
 
-    def feed_forward_g(self, u, v):
-        p_W, p_b = dy.parameter(self.g_W), dy.parameter(self.g_b)
-        return p_W * dy.concatenate([u, v]) + p_b
+        p_W_f_out, p_b_f_out = dy.parameter(self.f_W_out), dy.parameter(self.f_b_out)
+        a_f_out = self.f_act(p_W_f_out * dy.dropout(a_f_in, drop) + p_b_f_out)
+        b_f_out = self.f_act(p_W_f_out * dy.dropout(b_f_in, drop) + p_b_f_out)
 
-    @staticmethod
-    def get_v(list_of_vis):
-        """ for calculate v1 and v2 """
-        return dy.esum(list_of_vis)
+        return a_f_out, b_f_out
 
-    def feed_forward_h(self, v1, v2):
-        p_W, p_b = dy.parameter(self.h_W), dy.parameter(self.h_b)
-        return p_W * dy.concatenate([v1, v2]) + p_b
+    def apply_g(self, a, b, drop=0.2):
+        """ MLP on each a, b """
+        p_W_g_in, p_b_g_in = dy.parameter(self.g_W_in), dy.parameter(self.g_b_in)
+        a_g_in = self.g_act(p_W_g_in * dy.dropout(a, drop) + p_b_g_in)
+        b_g_in = self.g_act(p_W_g_in * dy.dropout(b, drop) + p_b_g_in)
 
-    @staticmethod
-    def find_index_label(net_output):
-        return np.argmax(net_output.npvalue())
+        p_W_g_out, p_b_g_out = dy.parameter(self.g_W_out), dy.parameter(self.g_b_out)
+        a_g_out = self.g_act(p_W_g_out * dy.dropout(a_g_in, drop) + p_b_g_out)
+        b_g_out = self.g_act(p_W_g_out * dy.dropout(b_g_in, drop) + p_b_g_out)
 
-    def apply_embed(self, s):
-        """ s is a list of words """
-        return [dy.lookup(self.embed, self.w2i[w]) if w in self.w2i
-                else dy.lookup(self.embed, self.w2i[UNK])
-                for w in s]
+        return a_g_out, b_g_out
+
+    def apply_h(self, s, drop=0.2):
+        """ MLP """
+        p_W_h_in, p_b_h_in = dy.parameter(self.h_W_in), dy.parameter(self.h_b_in)
+        h_in = self.h_act(p_W_h_in * dy.dropout(s, drop) + p_b_h_in)
+
+        p_W_h_out, p_b_h_out = dy.parameter(self.h_W_out), dy.parameter(self.h_b_out)
+        return self.h_act(p_W_h_out * dy.dropout(h_in, drop) + p_b_h_out)
 
     def __call__(self, a, b):
-        """ a and b are sentences """
-        a = a.split()
-        b = b.split()
-
+        """ a and b are each a matrix """
         # embed
-        a_vecs = self.apply_embed(a)
-        b_vecs = self.apply_embed(b)
+        a, b = self.apply_embed_linear(a, b)
 
         # F
-        a_after_f = [self.feed_forward_f(w_vec) for w_vec in a_vecs]
-        b_after_f = [self.feed_forward_f(w_vec) for w_vec in b_vecs]
+        a_f, b_f = self.apply_f(a, b)
 
-        # e
-        ea, eb = dict(), dict()
-        for a_f_i in a_after_f:
-            ea[a_f_i] = [self.e_i_j(a_f_i, b_f_j) for b_f_j in b_after_f]
-        for j, b_f_j in enumerate(b_after_f):
-            eb[b_f_j] = [ea[a_f_i][j] for a_f_i in ea]
+        # attention
+        a_atten_score = a_f * dy.transpose(b_f)
+        a_atten = dy.softmax(a_atten_score)
+        b_atten_score = dy.transpose(a_atten_score)
+        b_atten = dy.softmax(b_atten_score)
 
-        # alpha and beta
-        beta_list = [self.beta_i(ea[ea_i], b_vecs) for ea_i in ea]
-        alpha_list = [self.alpha_j(eb[eb_j], a_vecs) for eb_j in eb]
+        # align
+        a_pairs = dy.concatenate_cols([a, a_atten * b])
+        b_pairs = dy.concatenate_cols([b, b_atten * a])
 
         # G
-        v1_vecs = [self.feed_forward_g(a_i, beta_i) for a_i, beta_i in zip(a_vecs, beta_list)]
-        v2_vecs = [self.feed_forward_g(b_j, alpha_j) for b_j, alpha_j in zip(b_vecs, alpha_list)]
+        a_g, b_g = self.apply_g(a_pairs, b_pairs)
 
-        # aggregate - v1 and v2
-        v1 = self.get_v(v1_vecs)
-        v2 = self.get_v(v2_vecs)
+        # sum
+        a_sum = dy.sum_dim(a_g, [0])
+        b_sum = dy.sum_dim(b_g, [0])
+        concat = dy.transpose(dy.concatenate([a_sum, b_sum]))
 
         # H
-        probs = self.feed_forward_h(v1, v2)
-        return probs
+        sentence_h = self.apply_h(concat)
 
-    def train_on(self, train, dev, test, to_save=False, model_name=None):
-        """ train, dev and test are tuples (s1 sentences, s2 sentences, gold labels)
-            if to_save is True, then user must specify model_name
+        # to out dim
+        p_W_out, p_b_out = dy.parameter(self.linear_final_W), dy.parameter(self.linear_final_b)
+        out = dy.transpose(p_W_out * sentence_h + p_b_out)
+        return dy.softmax(out)
+
+    def train_on(self, train, dev, epochs=1, model_name=None):
         """
-        if to_save and model_name is None:
-            raise Exception('to save, you must specify model_name')
-
-        report_dev_file = open('acc_dev_and_test', 'w')
-        report_dev_file.write('dev,test\n')
+        if model_name passed then the model will be saved.
+        """
+        report_dev_file = open('acc_dev.txt', 'w')
+        report_dev_file.write('dev\n')
         best_dev_acc = 0.0
-        report_train_file = open('acc_train', 'w')
+        report_train_file = open('acc_train.txt', 'w')
         report_train_file.write('train\n')
 
         trainer = dy.AdamTrainer(self.model)
 
         check_after = 60000
+        train_size = len(train)
 
-        for epoch in range(1):
-            train_size = 0
-            total_loss = good = bad = 0.0
+        for epoch in range(epochs):
+            total_loss = good = 0.0
             t_epoch = t = time()
 
-            for s1, s2, gold_label in zip(train[0], train[1], train[2]):
-                if gold_label == '-' or type(s1) != str or type(s2) != str:
-                    continue  # ignore input that has no gold-label
-
+            for i, (s1, s2, gold_label) in enumerate(train):
                 dy.renew_cg()
-                train_size += 1
 
                 output = self(s1, s2)
                 loss = -dy.log(dy.pick(output, self.l2i[gold_label]))
@@ -157,32 +139,31 @@ class SnliModel(object):
                 loss.backward()
                 trainer.update()
 
-                pred_label_index = self.find_index_label(output)
+                pred_label_index = np.argmax(output.npvalue())
                 if gold_label == self.i2l[pred_label_index]:
                     good += 1
-                else:
-                    bad += 1
 
-                if train_size % check_after == check_after - 1:
+                if i % check_after == check_after - 1:
                     print 'time for', check_after, 'sentences:', time() - t
                     t = time()
 
-                    curr_dev_acc, test_acc = self.check_test(dev), self.check_test(test)
-                    report_dev_file.write(str(curr_dev_acc) + ',' + str(test_acc) + '\n')
-                    if to_save and curr_dev_acc > best_dev_acc:
+                    # test_acc = self.check_test(test)
+                    curr_dev_acc = self.check_test(dev)
+                    report_dev_file.write(str(curr_dev_acc) + '\n')
+                    if model_name and curr_dev_acc > best_dev_acc:
                         best_dev_acc = curr_dev_acc
                         self.save_model(model_name)
-                    print 'time for dev and test:', time() - t, 'dev-acc:', curr_dev_acc, 'test-acc:', test_acc
+                    print 'time for dev:', time() - t, 'dev-acc:', curr_dev_acc
                     t = time()
 
-            train_acc = good / (good + bad)
+            train_acc = good / train_size
             print epoch, 'loss:', total_loss / train_size, 'acc:', train_acc, 'time:', time() - t_epoch
             report_train_file.write(str(train_acc) + '\n')
 
             t = time()
-            curr_dev_acc, test_acc = self.check_test(dev), self.check_test(test)
+            curr_dev_acc, test_acc = self.check_test(dev)
             report_dev_file.write(str(curr_dev_acc) + ',' + str(test_acc) + '\n')
-            if to_save and curr_dev_acc > best_dev_acc:
+            if model_name and curr_dev_acc > best_dev_acc:
                 best_dev_acc = curr_dev_acc
                 self.save_model(model_name)
             print 'time for dev and test:', time() - t, 'dev-acc:', curr_dev_acc, 'test-acc:', test_acc
@@ -192,62 +173,22 @@ class SnliModel(object):
 
     def check_test(self, test):
         """ test is a tuple (s1 sentences, s2 sentences, gold labels) """
-        good = bad = 0.0
-        t = time()
-        test_size = 0
+        good = 0.0
+        test_size = len(test)
 
-        for s1, s2, gold_label in zip(test[0], test[1], test[2]):
-            if gold_label == '-':
-                continue
-
+        for s1, s2, gold_label in test:
             dy.renew_cg()
-            test_size += 1
 
             output = self(s1, s2)
-            pred_label = self.i2l[self.find_index_label(output)]
+            pred_label = self.i2l[np.argmax(output.npvalue())]
             if gold_label == pred_label:
                 good += 1
-            else:
-                bad += 1
 
-        acc = good / (good + bad)
+        acc = good / test_size
         return acc
 
     def save_model(self, filename):
         self.model.save(filename)
-        emb_dim, f_in_dim, f_act, g_out_dim = self.spec
-        obj = {'w2i': self.w2i, 'l2i': self.l2i,
-               'emb_dim': emb_dim, 'f_in_dim': f_in_dim, 'f_act': f_act, 'g_out_dim': g_out_dim}
-        pickle.dump(obj, open(filename + '.params', 'wb'))
 
-    @staticmethod
-    def load_model(filename):
-        reader = pickle.load(open(filename + '.params', 'rb'))
-        w2i, l2i = reader['w2i'], reader['l2i']
-        emb_dim, f_in_dim, f_act, g_out_dim = reader['emb_dim'], reader['f_in_dim'], reader['f_act'], reader[
-            'g_out_dim']
-        m = dy.ParameterCollection()
-
-        net = SnliModel(m, w2i, l2i, emb_dim, f_in_dim, f_act, g_out_dim)
-        m.populate(filename)
-
-        return net
-
-
-if __name__ == '__main__':
-    t0 = time()
-    print 'start'
-
-    my_words = ['hello', 'see', 'me', 'look', 'right', 'here']
-    w_to_i = {my_word: index for index, my_word in enumerate(my_words)}
-    my_labels = ['a', 'b', 'c']
-    l_to_i = {my_label: index for index, my_label in enumerate(my_labels)}
-
-    my_snli_model = SnliModel(dy.ParameterCollection(), w_to_i, l_to_i)
-    a1 = 'hello see me'.split()
-    b1 = 'look right here'.split()
-    dy.renew_cg()
-    prob = my_snli_model(a1, b1)
-    print my_snli_model.find_index_label(prob), prob.npvalue()
-
-    print 'time to run all:', time() - t0
+    def load_model(self, filename):
+        self.model.populate(filename)
