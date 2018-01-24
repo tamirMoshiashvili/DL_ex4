@@ -94,18 +94,20 @@ class SnliModel(object):
         output = dy.log_softmax(dy.transpose(h))
         return output
 
-    def train_on(self, train, dev, epochs=1, model_name=None):
+    def train_on(self, train, dev, epochs=10, batch_size=32, model_name=None):
         """
         :param train: list of tuples (s1, s2, gold label),
                         s1 and s2 are each a matrix,
                         gold label is a string
         :param dev: same as train.
         :param epochs: number of epochs.
+        :param batch_size: batch size.
         :param model_name: name of file if you want to save the model, otherwise None.
         """
         trainer = dy.AdamTrainer(self.model)
-        best_dev_acc = 0.0
-        check_after = 30000
+        best_dev_acc = self.check_on_dev(dev, model_name, 0.0)
+        check_after = int(32000 / batch_size)
+        curr_index = 0
         display_after = 10000
         train_size = len(train)
 
@@ -115,28 +117,47 @@ class SnliModel(object):
             total_loss = good = 0.0
             dy.np.random.shuffle(train)
 
+            dy.renew_cg()
+            errors = []
             for i in range(train_size):
                 if i % display_after == display_after - 1:
                     print 'current index:', i + 1
 
-                dy.renew_cg()
+                if i % batch_size == batch_size - 1:
+                    batch_error = dy.esum(errors)
+                    total_loss += batch_error.value()
+                    batch_error.backward()
+                    trainer.update()
+
+                    if curr_index == check_after:
+                        curr_index = 0
+                        best_dev_acc = self.check_on_dev(dev, model_name, best_dev_acc)
+                    else:
+                        curr_index += 1
+
+                    dy.renew_cg()
+                    errors = []
+
                 s1, s2, gold_label = train[i]
                 output = self(s1, s2)
                 gold_label_index = self.l2i[gold_label]
                 loss = dy.pickneglogsoftmax(output, gold_label_index)
-                total_loss += loss.value()
-                loss.backward()
-                trainer.update()
+                errors.append(loss)
 
                 pred_label_index = dy.np.argmax(output.npvalue())
                 if pred_label_index == gold_label_index:
                     good += 1
 
-                if i % check_after == check_after - 1:
-                    best_dev_acc = self.check_on_dev(dev, model_name, best_dev_acc)
+            if errors:
+                batch_error = dy.esum(errors)
+                total_loss += batch_error.value()
+                batch_error.backward()
+                trainer.update()
 
             best_dev_acc = self.check_on_dev(dev, model_name, best_dev_acc)
-            print 'train - acc:', good / train_size, 'time:', time() - t_epoch
+            print 'train - acc:', good / train_size,\
+                'loss:', total_loss / train_size,\
+                'time:', time() - t_epoch
 
     def check_on_dev(self, dev, model_name, best_dev_acc):
         print 'start checking on dev'
