@@ -25,10 +25,7 @@ def sentence_to_matrix(s, w2v):
     :param w2v: word-to-vector dict.
     :return: matrix representing the sentence, each ith-row is a vector for ith-word.
     """
-    s = s.split()
-    return np.array([w2v[w] if w in w2v
-                     else w2v[UNK]]
-                    for w in s)
+    return np.array([w2v[w] if w in w2v else w2v[UNK] for w in s.split()])
 
 
 def read_snli_data(file_path, w2v):
@@ -41,7 +38,7 @@ def read_snli_data(file_path, w2v):
 
     with open(file_path, 'r') as f:
         for line in f:
-            line = json.load(line)
+            line = json.loads(line)
             label = line['gold_label']
             if label != u'-':  # ignore lines with no gold-label
                 s1 = sentence_to_matrix(line['sentence1'], w2v)
@@ -49,3 +46,4 @@ def read_snli_data(file_path, w2v):
 
                 data.append((s1, s2, label))
     return data
+

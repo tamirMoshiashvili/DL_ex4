@@ -1,178 +1,161 @@
 from time import time
 
 import dynet as dy
-import numpy as np
 
 UNK = 'UNK'
 
 
 class SnliModel(object):
-    def __init__(self, pc, l2i, emb_dim=300, hid_dim=200, act_func=dy.rectify):
-        self.model = pc
+    def __init__(self, model, l2i, emb_dim=300, hid_dim=200):
+        # embed_dim = w2v[UNK].shape[0] send this as emb dim
+        self.model = model
         self.l2i = l2i
         self.i2l = {i: l for l, i in l2i.iteritems()}
 
-        # embed to linear
-        self.linear_embed_W, self.linear_embed_b = pc.add_parameters((hid_dim, emb_dim)), pc.add_parameters(hid_dim)
+        self.linear_embed = model.add_parameters((emb_dim, hid_dim))
 
-        # F
-        self.f_W_in, self.f_b_in = pc.add_parameters((hid_dim, hid_dim)), pc.add_parameters(hid_dim)
-        self.f_act = act_func
-        self.f_W_out, self.f_b_out = pc.add_parameters((hid_dim, hid_dim)), pc.add_parameters(hid_dim)
+        self.mlp_f = (model.add_parameters((hid_dim, hid_dim)), model.add_parameters((hid_dim, hid_dim)))
+        self.mlp_g = (model.add_parameters((2 * hid_dim, hid_dim)), model.add_parameters((hid_dim, hid_dim)))
+        self.mlp_h = (model.add_parameters((2 * hid_dim, hid_dim)), model.add_parameters((hid_dim, hid_dim)))
+        self.act_func = dy.rectify
 
-        # G
-        self.g_W_in, self.g_b_in = pc.add_parameters((hid_dim, 2 * hid_dim)), pc.add_parameters(hid_dim)
-        self.g_act = act_func
-        self.g_W_out, self.g_b_out = pc.add_parameters((hid_dim, hid_dim)), pc.add_parameters(hid_dim)
-
-        # H
-        self.h_W_in, self.h_b_in = pc.add_parameters((hid_dim, 2 * hid_dim)), pc.add_parameters(hid_dim)
-        self.h_act = act_func
-        self.h_W_out, self.h_b_out = pc.add_parameters((hid_dim, hid_dim)), pc.add_parameters(hid_dim)
-
-        # to out-dim
         out_dim = len(l2i)
-        self.linear_final_W, self.linear_final_b = pc.add_parameters((out_dim, hid_dim)), pc.add_parameters(out_dim)
+        self.linear_final = model.add_parameters((hid_dim, out_dim))
 
-    def apply_embed_linear(self, a, b):
+    def apply_linear_embed(self, sent1, sent2):
         """
-        :param a: matrix, each row is the vector representing the ith word in the sentence.
-        :param b: matrix, each row is the vector representing the ith word in the sentence.
-        :return: a, b after linear-layer, hid-dim
+        :param sent1: np matrix.
+        :param sent2: np matrix.
+        :return: each sentence after projection to hid_dim.
         """
-        p_W_embed, p_b_embed = dy.parameter(self.linear_embed_W), dy.parameter(self.linear_embed_b)
-        a = p_W_embed * dy.inputTensor(a) + p_b_embed
-        b = p_W_embed * dy.inputTensor(b) + p_b_embed
-        return a, b
+        p_W = dy.parameter(self.linear_embed)
+        sent1 = dy.inputTensor(sent1) * p_W
+        sent2 = dy.inputTensor(sent2) * p_W
+        return sent1, sent2
 
-    def apply_f(self, a, b, drop=0.2):
-        """ MLP on each a, b """
-        p_W_f_in, p_b_f_in = dy.parameter(self.f_W_in), dy.parameter(self.f_b_in)
-        a_f_in = self.f_act(p_W_f_in * dy.dropout(a, drop) + p_b_f_in)
-        b_f_in = self.f_act(p_W_f_in * dy.dropout(b, drop) + p_b_f_in)
+    def apply_mlp_layer(self, sent1, sent2, layer_in, layer_out, drop=0.2):
+        """
+        :param sent1: np matrix.
+        :param sent2: np matrix.
+        :param layer_in: dy parameter (matrix).
+        :param layer_out: dy parameter (matrix).
+        :param drop: drop rate.
+        :return: both sentence after going through mlp-layer.
+        """
+        sent1 = self.act_func(dy.dropout(sent1, drop) * layer_in)
+        sent2 = self.act_func(dy.dropout(sent2, drop) * layer_in)
 
-        p_W_f_out, p_b_f_out = dy.parameter(self.f_W_out), dy.parameter(self.f_b_out)
-        a_f_out = self.f_act(p_W_f_out * dy.dropout(a_f_in, drop) + p_b_f_out)
-        b_f_out = self.f_act(p_W_f_out * dy.dropout(b_f_in, drop) + p_b_f_out)
+        sent1 = self.act_func(dy.dropout(sent1, drop) * layer_out)
+        sent2 = self.act_func(dy.dropout(sent2, drop) * layer_out)
+        return sent1, sent2
 
-        return a_f_out, b_f_out
+    def apply_f(self, sent1, sent2, drop=0.2):
+        f_in, f_out = dy.parameter(self.mlp_f[0]), dy.parameter(self.mlp_f[1])
+        return self.apply_mlp_layer(sent1, sent2, f_in, f_out, drop)
 
-    def apply_g(self, a, b, drop=0.2):
-        """ MLP on each a, b """
-        p_W_g_in, p_b_g_in = dy.parameter(self.g_W_in), dy.parameter(self.g_b_in)
-        a_g_in = self.g_act(p_W_g_in * dy.dropout(a, drop) + p_b_g_in)
-        b_g_in = self.g_act(p_W_g_in * dy.dropout(b, drop) + p_b_g_in)
+    def apply_g(self, sent1_combine, sent2_combine):
+        g_in, g_out = dy.parameter(self.mlp_g[0]), dy.parameter(self.mlp_g[1])
+        return self.apply_mlp_layer(sent1_combine, sent2_combine, g_in, g_out)
 
-        p_W_g_out, p_b_g_out = dy.parameter(self.g_W_out), dy.parameter(self.g_b_out)
-        a_g_out = self.g_act(p_W_g_out * dy.dropout(a_g_in, drop) + p_b_g_out)
-        b_g_out = self.g_act(p_W_g_out * dy.dropout(b_g_in, drop) + p_b_g_out)
+    def apply_h(self, input_combine, drop=0.2):
+        h_in, h_out = dy.parameter(self.mlp_h[0]), dy.parameter(self.mlp_h[1])
+        h = self.act_func(dy.dropout(input_combine, drop) * h_in)
+        h = self.act_func(dy.dropout(h, drop) * h_out)
+        return h
 
-        return a_g_out, b_g_out
+    def __call__(self, sent1, sent2):
+        """
+        :param sent1: np matrix.
+        :param sent2: np matrix.
+        :return: np array of 3 elements.
+        """
+        sent1_linear, sent2_linear = self.apply_linear_embed(sent1, sent2)
+        f1, f2 = self.apply_f(sent1_linear, sent2_linear)
 
-    def apply_h(self, s, drop=0.2):
-        """ MLP """
-        p_W_h_in, p_b_h_in = dy.parameter(self.h_W_in), dy.parameter(self.h_b_in)
-        h_in = self.h_act(p_W_h_in * dy.dropout(s, drop) + p_b_h_in)
+        score1 = f1 * dy.transpose(f2)
+        prob1 = dy.softmax(score1)
+        score2 = dy.transpose(score1)
+        prob2 = dy.softmax(score2)
 
-        p_W_h_out, p_b_h_out = dy.parameter(self.h_W_out), dy.parameter(self.h_b_out)
-        return self.h_act(p_W_h_out * dy.dropout(h_in, drop) + p_b_h_out)
-
-    def __call__(self, a, b):
-        """ a and b are each a matrix """
-        # embed
-        a, b = self.apply_embed_linear(a, b)
-
-        # F
-        a_f, b_f = self.apply_f(a, b)
-
-        # attention
-        a_atten_score = a_f * dy.transpose(b_f)
-        a_atten = dy.softmax(a_atten_score)
-        b_atten_score = dy.transpose(a_atten_score)
-        b_atten = dy.softmax(b_atten_score)
-
-        # align
-        a_pairs = dy.concatenate_cols([a, a_atten * b])
-        b_pairs = dy.concatenate_cols([b, b_atten * a])
-
-        # G
-        a_g, b_g = self.apply_g(a_pairs, b_pairs)
+        sent1_combine = dy.concatenate_cols([sent1_linear, prob1 * sent2_linear])
+        sent2_combine = dy.concatenate_cols([sent2_linear, prob2 * sent1_linear])
 
         # sum
-        a_sum = dy.sum_dim(a_g, [0])
-        b_sum = dy.sum_dim(b_g, [0])
-        concat = dy.transpose(dy.concatenate([a_sum, b_sum]))
+        g1, g2 = self.apply_g(sent1_combine, sent2_combine)
+        sent1_output = dy.sum_dim(g1, [0])
+        sent2_output = dy.sum_dim(g2, [0])
 
-        # H
-        sentence_h = self.apply_h(concat)
+        input_combine = dy.transpose(dy.concatenate([sent1_output, sent2_output]))
+        h = self.apply_h(input_combine)
 
-        # to out dim
-        p_W_out, p_b_out = dy.parameter(self.linear_final_W), dy.parameter(self.linear_final_b)
-        out = dy.transpose(p_W_out * sentence_h + p_b_out)
-        return dy.softmax(out)
+        linear_final = dy.parameter(self.linear_final)
+        h = h * linear_final
+
+        output = dy.log_softmax(dy.transpose(h))
+        return output
 
     def train_on(self, train, dev, epochs=1, model_name=None):
         """
-        if model_name passed then the model will be saved.
+        :param train: list of tuples (s1, s2, gold label),
+                        s1 and s2 are each a matrix,
+                        gold label is a string
+        :param dev: same as train.
+        :param epochs: number of epochs.
+        :param model_name: name of file if you want to save the model, otherwise None.
         """
-        report_dev_file = open('acc_dev.txt', 'w')
-        report_dev_file.write('dev\n')
-        best_dev_acc = 0.0
-        report_train_file = open('acc_train.txt', 'w')
-        report_train_file.write('train\n')
-
         trainer = dy.AdamTrainer(self.model)
-
-        check_after = 60000
+        best_dev_acc = 0.0
+        check_after = 30000
+        display_after = 10000
         train_size = len(train)
 
         for epoch in range(epochs):
+            print 'start epoch:', epoch
+            t_epoch = time()
             total_loss = good = 0.0
-            t_epoch = t = time()
+            dy.np.random.shuffle(train)
 
-            for i, (s1, s2, gold_label) in enumerate(train):
+            for i in range(train_size):
+                if i % display_after == display_after - 1:
+                    print 'current index:', i + 1
+
                 dy.renew_cg()
-
+                s1, s2, gold_label = train[i]
                 output = self(s1, s2)
-                loss = -dy.log(dy.pick(output, self.l2i[gold_label]))
+                gold_label_index = self.l2i[gold_label]
+                loss = dy.pickneglogsoftmax(output, gold_label_index)
                 total_loss += loss.value()
                 loss.backward()
                 trainer.update()
 
-                pred_label_index = np.argmax(output.npvalue())
-                if gold_label == self.i2l[pred_label_index]:
+                pred_label_index = dy.np.argmax(output.npvalue())
+                if pred_label_index == gold_label_index:
                     good += 1
 
                 if i % check_after == check_after - 1:
-                    print 'time for', check_after, 'sentences:', time() - t
-                    t = time()
+                    best_dev_acc = self.check_on_dev(dev, model_name, best_dev_acc)
 
-                    # test_acc = self.check_test(test)
-                    curr_dev_acc = self.check_test(dev)
-                    report_dev_file.write(str(curr_dev_acc) + '\n')
-                    if model_name and curr_dev_acc > best_dev_acc:
-                        best_dev_acc = curr_dev_acc
-                        self.save_model(model_name)
-                    print 'time for dev:', time() - t, 'dev-acc:', curr_dev_acc
-                    t = time()
+            best_dev_acc = self.check_on_dev(dev, model_name, best_dev_acc)
+            print 'train - acc:', good / train_size, 'time:', time() - t_epoch
 
-            train_acc = good / train_size
-            print epoch, 'loss:', total_loss / train_size, 'acc:', train_acc, 'time:', time() - t_epoch
-            report_train_file.write(str(train_acc) + '\n')
+    def check_on_dev(self, dev, model_name, best_dev_acc):
+        print 'start checking on dev'
+        curr_dev_acc, t_dev = self.check_test(dev)
+        print 'dev - acc:', curr_dev_acc, 'time:', t_dev
 
-            t = time()
-            curr_dev_acc, test_acc = self.check_test(dev)
-            report_dev_file.write(str(curr_dev_acc) + ',' + str(test_acc) + '\n')
-            if model_name and curr_dev_acc > best_dev_acc:
-                best_dev_acc = curr_dev_acc
-                self.save_model(model_name)
-            print 'time for dev and test:', time() - t, 'dev-acc:', curr_dev_acc, 'test-acc:', test_acc
-
-        report_dev_file.close()
-        report_train_file.close()
+        if model_name and curr_dev_acc > best_dev_acc:
+            best_dev_acc = curr_dev_acc
+            self.save(model_name)
+        return best_dev_acc
 
     def check_test(self, test):
-        """ test is a tuple (s1 sentences, s2 sentences, gold labels) """
+        """
+        :param test: list of tuples (s1, s2, gold label),
+                        s1 and s2 are each a matrix,
+                        gold label is a string
+        :return: accuracy on the test and time to run
+        """
+        t_test = time()
         good = 0.0
         test_size = len(test)
 
@@ -180,15 +163,15 @@ class SnliModel(object):
             dy.renew_cg()
 
             output = self(s1, s2)
-            pred_label = self.i2l[np.argmax(output.npvalue())]
+            pred_label = self.i2l[dy.np.argmax(output.npvalue())]
             if gold_label == pred_label:
                 good += 1
 
         acc = good / test_size
-        return acc
+        return acc, time() - t_test
 
-    def save_model(self, filename):
+    def save(self, filename):
         self.model.save(filename)
 
-    def load_model(self, filename):
-        self.model.populate(filename)
+    def load(self, filename):
+        self.model.load(filename)
