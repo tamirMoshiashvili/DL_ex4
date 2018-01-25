@@ -1,0 +1,38 @@
+## Tamir Moshiashvili - moshiat
+
+# Requirements:
+- python2.7
+- numpy
+- dynet
+- Glove pre-trained vectors (840B)
+
+# Instructions:
+In order to run the model on the data, run the following:
+python2.7 main.py glove_file [options]
+
+## args:
+    glove_file [options]
+    * glove_file - path to the glove file (glove.840B.300d.txt)
+
+    options:
+    * --save model_name
+        add the flag '--save' to save the model in case of training,
+        model_name is the name of the saved-model.
+    * --load pretrained_model_name
+        add the flag '--load' to load a model from a file,
+        pretrained_model_name is the path to the file to load the model from.
+    * --train train_file dev_file
+        add the flag '--train' in order to train the model,
+        train_file is the path to the train file (json),
+        dev_file is the path to the dev file (json).
+    * --test test_file
+        add the flag '--test' in order to test the model on the file,
+        test_file is the path to the test file (json).
+
+## examples:
+- in order to train the model with saving it into a file named 'last.model':
+    python2.7 main.py glove.840B.300d.txt --save last.model --train snli_1.0/snli_1.0_train.jsonl snli_1.0/snli_1.0_dev.jsonl
+- in order to continue training pre-trained model, named 'last.model' and save it into a new file named 'new.model'
+    python2.7 main.py glove.840B.300d.txt --load last.model --save new.model --train snli_1.0/snli_1.0_train.jsonl snli_1.0/snli_1.0_dev.jsonl
+- in order to load a model, named 'last.model', and check the accuracy:
+    python2.7 main.py glove.840B.300d.txt --load last.model --test snli_1.0/snli_1.0_test.jsonl

@@ -49,9 +49,9 @@ class SnliModel(object):
         sent2 = self.act_func(dy.dropout(sent2, drop) * layer_out)
         return sent1, sent2
 
-    def apply_f(self, sent1, sent2, drop=0.2):
+    def apply_f(self, sent1, sent2):
         f_in, f_out = dy.parameter(self.mlp_f[0]), dy.parameter(self.mlp_f[1])
-        return self.apply_mlp_layer(sent1, sent2, f_in, f_out, drop)
+        return self.apply_mlp_layer(sent1, sent2, f_in, f_out)
 
     def apply_g(self, sent1_combine, sent2_combine):
         g_in, g_out = dy.parameter(self.mlp_g[0]), dy.parameter(self.mlp_g[1])
@@ -94,8 +94,8 @@ class SnliModel(object):
         output = dy.log_softmax(dy.transpose(h))
         return output
 
-    def train_on(self, train, dev, epochs=10, batch_size=32, model_name=None):
-        """
+    def train_on(self, train, dev, epochs=20, batch_size=32, model_name=None):
+        """ best-69.06
         :param train: list of tuples (s1, s2, gold label),
                         s1 and s2 are each a matrix,
                         gold label is a string
@@ -112,7 +112,7 @@ class SnliModel(object):
         train_size = len(train)
 
         for epoch in range(epochs):
-            print 'start epoch:', epoch
+            print '\n\t\t***\tstart epoch:', epoch, '\tbest-dev-acc:', best_dev_acc, '\t***'
             t_epoch = time()
             total_loss = good = 0.0
             dy.np.random.shuffle(train)
@@ -157,7 +157,8 @@ class SnliModel(object):
             best_dev_acc = self.check_on_dev(dev, model_name, best_dev_acc)
             print 'train - acc:', good / train_size,\
                 'loss:', total_loss / train_size,\
-                'time:', time() - t_epoch
+                'time:', time() - t_epoch,\
+                'best-dev-acc:', best_dev_acc
 
     def check_on_dev(self, dev, model_name, best_dev_acc):
         print 'start checking on dev'
@@ -195,4 +196,4 @@ class SnliModel(object):
         self.model.save(filename)
 
     def load(self, filename):
-        self.model.load(filename)
+        self.model.populate(filename)
